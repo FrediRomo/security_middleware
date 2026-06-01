@@ -1,0 +1,60 @@
+# config/security_policy.yaml
+#
+# System-wide security policy. Single auditable source of truth for the
+# security posture. Loaded once at security_init() time.
+#
+# Priority chain (highest wins):
+#   ROS2_SECURITY_DISABLED=1                            <- global kill switch
+#   security_init(level=...) / create_secure_subscription(min_level=...)
+#   security_policy.yaml                                <- this file
+#
+# Valid level values: none | sign | sign+encrypt
+
+# Floor applied to any node or subscription not explicitly listed below.
+global_min_level: none
+
+nodes:
+  camera_node:
+    publish_level: sign+encrypt           # SecurityLevel for this node's wrap()
+    subscriptions:
+      /control/commands:
+        min_level: sign                   # min_level for this subscription
+
+  lidar_node:
+    publish_level: sign
+    subscriptions:
+      /control/commands:
+        min_level: sign
+
+  planner_node:
+    publish_level: sign
+    subscriptions:
+      /camera/frame:
+        min_level: sign                   # accepts sign or sign+encrypt
+      /lidar/scan:
+        min_level: sign
+      /diagnostics:
+        min_level: none                   # accepts legacy/relay traffic
+
+  legacy_relay:
+    publish_level: none
+    subscriptions: {}                     # no secured subscriptions
+
+  # ── demo nodes ────────────────────────────────────────────────
+
+  # Plain legacy node — no mixin, no SecureEnvelope.
+  # Policy entry is informational only; the node never calls security_init().
+  demo_legacy_publisher:
+    publish_level: none
+    subscriptions: {}
+
+  demo_publisher:
+    publish_level: sign
+    subscriptions: {}
+
+  demo_subscriber:
+    publish_level: sign
+    subscriptions:
+      /chatter:
+        min_level: sign           # default: drop unsigned traffic
+                                  # override per instance with min_level param

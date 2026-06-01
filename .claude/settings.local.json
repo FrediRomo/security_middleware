@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git config *)",
+      "Bash(ls -1 /tmp/certs_smoke/ | sort && echo \"--- ca.srl present? ---\" && test -f /tmp/certs_smoke/ca.srl && echo \"yes\" || echo \"NO\")",
+      "Read(//tmp/certs_smoke/**)",
+      "Bash(rm -rf /tmp/certs_smoke2)",
+      "Bash(CERTS_DIR=/tmp/certs_smoke2 /root/ros2_ws/security_middleware/scripts/generate_certs.sh camera_node lidar_node planner_node legacy_node)",
+      "Read(//tmp/**)"
+    ]
+  }
+}
