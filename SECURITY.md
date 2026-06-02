@@ -296,11 +296,42 @@ process. A subscriber with `min_level=none` will accept the relayed traffic; a
 subscriber with `min_level=sign` will drop it (the trust boundary is enforced
 by the subscriber, with no changes needed upstream).
 
-To **vouch** for the legacy node's traffic at a higher level, upgrade the
-relay to `SIGN_ONLY` with its own cert (`legacy_relay.key`/`.crt`) — it then
-re-signs the wrapped payload at its own identity. The library form
-(`LegacyRelayNode` in `ros2_security/legacy_relay.py`) can be subclassed if
-you need this; `nodes/legacy_relay.py` is a runnable template.
+### Vouching for legacy traffic
+
+To **vouch** for the legacy node's traffic at a higher level, raise the relay to
+`sign` (or `sign+encrypt`) and give it its own cert (`legacy_relay.key`/`.crt`) —
+it then re-signs the wrapped payload at its own identity, so a subscriber
+requiring `min_level=sign` accepts the relayed traffic. No subclassing needed;
+pass `--level` (and `--certs-dir`):
+
+```bash
+ros2 run ros2_security legacy_relay --level sign --certs-dir ./certs \
+    --bridge std_msgs/msg/String /diagnostics_raw /diagnostics
+```
+
+The library form (`LegacyRelayNode` in `ros2_security/legacy_relay.py`) takes the
+matching `level=`, `certs_dir=`, and `policy_path=` constructor arguments (all
+defaulting to the `none`/no-cert behavior above). Pass `level=None` to let the
+policy file drive it.
+
+### Reverse direction: exiting the trusted graph (`secure → native`)
+
+The symmetric case — feeding *trusted* traffic to an unmigrated or third-party
+subscriber — is the same node with `--direction outbound`. It subscribes to the
+secured topic, verifies/decrypts it, and republishes the typed inner message on
+a plain native topic. Verifying signatures requires a non-`none` `--level` (so
+the relay loads certs); `--min-level` gates which inbound traffic is allowed
+through (defaulting to the policy file):
+
+```bash
+ros2 run ros2_security legacy_relay --direction outbound \
+    --level sign --certs-dir ./certs --min-level sign \
+    --bridge std_msgs/msg/String /diagnostics_native /diagnostics
+```
+
+In the bridge triple the `NATIVE_TOPIC SECURE_TOPIC` order is unchanged; only the
+flow direction flips (secured `/diagnostics` → native `/diagnostics_native`).
+The library form takes `direction='outbound'` and `min_level=` arguments.
 
 ## 10. Launch files
 
