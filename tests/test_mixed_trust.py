@@ -117,6 +117,78 @@ def test_relay_pattern_end_to_end(executor, test_certs_dir):
     assert sub.received[0].data == "diag-ok"
 
 
+class NativeSub(Node):
+    def __init__(self, name, topic):
+        super().__init__(name)
+        self.received = []
+        self.create_subscription(String, topic, self.received.append, 10)
+
+
+def test_relay_outbound_secure_to_native(executor, test_certs_dir):
+    ex, nodes = executor
+    # camera publishes SIGN_ENCRYPT on a secured topic; the outbound relay
+    # verifies/decrypts and re-publishes it on a plain native topic.
+    pub = PubNode("camera_node", "/secure_out", test_certs_dir, SecurityLevel.SIGN_ENCRYPT)
+    relay = LegacyRelayNode(
+        [(String, "/native_out", "/secure_out")],
+        direction="outbound",
+        level=SecurityLevel.SIGN_ENCRYPT,
+        certs_dir=test_certs_dir,
+        min_level=SecurityLevel.NONE,
+    )
+    sub = NativeSub("plain_consumer", "/native_out")
+    nodes += [pub, relay, sub]
+    for n in (pub, relay, sub):
+        ex.add_node(n)
+    delivered = _run(ex, [lambda: pub.tick("trusted")],
+                     lambda: len(sub.received) > 0)
+    assert delivered
+    assert sub.received[0].data == "trusted"
+
+
+def test_relay_outbound_drops_below_min_level(executor, test_certs_dir):
+    ex, nodes = executor
+    # NONE publisher cannot satisfy an outbound relay gating at SIGN_ONLY:
+    # nothing reaches the native side.
+    pub = PubNode("lidar_node", "/secure_low", test_certs_dir, SecurityLevel.NONE)
+    relay = LegacyRelayNode(
+        [(String, "/native_low", "/secure_low")],
+        direction="outbound",
+        level=SecurityLevel.SIGN_ONLY,
+        certs_dir=test_certs_dir,
+        min_level=SecurityLevel.SIGN_ONLY,
+    )
+    sub = NativeSub("plain_consumer", "/native_low")
+    nodes += [pub, relay, sub]
+    for n in (pub, relay, sub):
+        ex.add_node(n)
+    delivered = _run(ex, [lambda: pub.tick("x")],
+                     lambda: len(sub.received) > 0, timeout=2.0)
+    assert not delivered
+    assert sub.received == []
+
+
+def test_relay_inbound_vouch_sign(executor, test_certs_dir):
+    ex, nodes = executor
+    # The relay vouches for native traffic by re-signing at its own identity
+    # (legacy_relay cert), so a SIGN_ONLY subscriber accepts it -- no subclassing.
+    native = NativePub("legacy_source", "/diag_raw")
+    relay = LegacyRelayNode(
+        [(String, "/diag_raw", "/diag_signed")],
+        level=SecurityLevel.SIGN_ONLY,
+        certs_dir=test_certs_dir,
+    )
+    sub = SubNode("planner_node", "/diag_signed", test_certs_dir,
+                  SecurityLevel.SIGN_ONLY, SecurityLevel.SIGN_ONLY)
+    nodes += [native, relay, sub]
+    for n in (native, relay, sub):
+        ex.add_node(n)
+    delivered = _run(ex, [lambda: native.tick("vouched")],
+                     lambda: len(sub.received) > 0)
+    assert delivered
+    assert sub.received[0].data == "vouched"
+
+
 def test_policy_drives_mixed_trust(executor, test_certs_dir, tmp_path):
     # Policy sets min_level=sign on planner_node's /lidar/scan subscription;
     # an unsigned (NONE) message must be dropped without any explicit code arg.
