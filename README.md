@@ -121,12 +121,3 @@ pytest tests/test_policy_loader.py tests/test_security_manager.py tests/test_kil
 source /opt/ros/humble/setup.bash && source install/setup.bash
 pytest tests/ -v
 ```
-
-## Note on AES key derivation (spec reconciliation)
-
-Section 7 of the spec describes the *self* AES key as `SHA-256(own private key
-DER)` but the *decrypt* key as `SHA-256(sender public key DER)`. Those never
-match, so SIGN_ENCRYPT could not round-trip. Since the public certificate is the
-only key material both parties share, **both sides derive the symmetric key from
-the public key DER** (the sender from its own public key, the receiver from the
-sender's cert). See `security_manager._aes_key_from_public_key`.
