@@ -60,6 +60,195 @@ The signature process: the message payload is hashed (using SHA-256), then the h
 
 This design—sign-then-encrypt at publish, verify-before-decrypt at subscribe—prevents a class of attacks where an attacker tries to manipulate encrypted data without the secret key.
 
+## Implementation Examples
+
+### Unsecured Node (Standard ROS2)
+
+A standard ROS2 node with no security:
+
+```python
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import String
+
+class UnsecuredPublisher(Node):
+    def __init__(self):
+        super().__init__('publisher_node')
+        # Standard ROS2 publisher — no security
+        self.publisher = self.create_publisher(String, '/topic', 10)
+        self.timer = self.create_timer(1.0, self.timer_callback)
+
+    def timer_callback(self):
+        msg = String()
+        msg.data = 'Hello, World'
+        # Direct native message published to the DDS network
+        self.publisher.publish(msg)
+
+if __name__ == '__main__':
+    rclpy.init()
+    node = UnsecuredPublisher()
+    rclpy.spin(node)
+```
+
+The message is published as raw CDR (Common Data Representation) bytes over DDS with no encryption, signature, or identity verification. Any node can publish or subscribe to any topic.
+
+### Secured Node Using SecureNodeMixin
+
+A node that uses the `SecureNodeMixin` to add authentication and optional encryption:
+
+```python
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import String
+
+from ros2_security.secure_node_mixin import SecureNodeMixin
+from ros2_security.security_manager import SecurityLevel
+
+class SecuredPublisher(SecureNodeMixin, Node):
+    """Node that publishes signed/encrypted messages."""
+
+    def __init__(self):
+        super().__init__('camera_node')
+        
+        # Initialize security: load certificates and set up crypto
+        # level=None reads from policy file; explicit level overrides
+        self.security_init(
+            level=SecurityLevel.SIGN_ENCRYPT,
+            certs_dir="./certs",
+            policy_path="./config/security_policy.yaml"
+        )
+        
+        # Create a secure publisher (publishes SecureEnvelope, not String)
+        self.publisher = self.create_secure_publisher(
+            '/camera/frame', String, qos=10
+        )
+        self.timer = self.create_timer(1.0, self.timer_callback)
+
+    def timer_callback(self):
+        msg = String()
+        msg.data = 'Encrypted frame data'
+        # secure_publish handles serialization, encryption, and signing
+        self.secure_publish(self.publisher, msg)
+
+class SecuredSubscriber(SecureNodeMixin, Node):
+    """Node that verifies signatures and decrypts messages."""
+
+    def __init__(self):
+        super().__init__('planner_node')
+        
+        # Initialize security
+        self.security_init(level=SecurityLevel.SIGN_ENCRYPT)
+        
+        # Create a secure subscription
+        # min_level=None reads from policy; explicit level enforces a minimum
+        self.create_secure_subscription(
+            '/camera/frame',
+            String,
+            self.on_message,
+            min_level=SecurityLevel.SIGN_ENCRYPT
+        )
+
+    def on_message(self, msg):
+        # msg is already verified and decrypted; callback receives typed message
+        self.get_logger().info(f'Received: {msg.data}')
+
+if __name__ == '__main__':
+    rclpy.init()
+    node = SecuredPublisher()
+    # OR: node = SecuredSubscriber()
+    rclpy.spin(node)
+```
+
+**How the security layer transforms the message:**
+
+1. **Publisher side** (`secure_publish`):
+   - Serializes the `String` message to CDR bytes
+   - Generates a random nonce (12 bytes)
+   - Encrypts the bytes using AES-256-GCM with the key derived from the node's own public certificate
+   - Signs the ciphertext using RSA-PSS (SHA-256) with the node's private key
+   - Wraps the result in a `SecureEnvelope` (sender ID, timestamp, signature, encrypted payload, nonce)
+
+2. **Subscriber side** (`create_secure_subscription`):
+   - Receives the `SecureEnvelope`
+   - Verifies the signature using the sender's public key (loaded from the sender's certificate)
+   - Checks that the sender is in the trusted certificate list
+   - Enforces `min_level`: rejects messages below the required security level
+   - Checks the timestamp against the replay window (default: 30s)
+   - Decrypts the payload using AES-256-GCM with the key derived from the sender's public certificate
+   - Deserializes the plaintext back to a typed `String` message
+   - Calls the application callback with the authenticated, decrypted message
+
+### Legacy Relay: Bridging Secure and Native Topologies
+
+The `LegacyRelayNode` bridges messages between secured and unsecured portions of the system:
+
+```python
+from ros2_security.legacy_relay import LegacyRelayNode
+from ros2_security.security_manager import SecurityLevel
+from std_msgs.msg import String
+
+# Inbound relay: native -> secured, with the relay vouching for legacy traffic
+inbound = LegacyRelayNode(
+    bridges=[
+        (String, '/diagnostics_raw', '/diagnostics'),  # native_topic -> secure_topic
+    ],
+    node_name='legacy_relay_in',
+    direction='inbound',
+    level=SecurityLevel.SIGN,  # The relay has a cert and re-signs
+    certs_dir='./certs'
+)
+
+# Outbound relay: secured -> native, verifying signatures first
+outbound = LegacyRelayNode(
+    bridges=[
+        (String, '/secure_data', '/public_data'),  # secure_topic -> native_topic
+    ],
+    node_name='legacy_relay_out',
+    direction='outbound',
+    level=SecurityLevel.SIGN,  # Required to verify signatures
+    min_level=SecurityLevel.SIGN,  # Only forward messages signed at SIGN or above
+    certs_dir='./certs'
+)
+```
+
+**Inbound relay workflow** (native → secure):
+- Subscribes to a native (unsecured) topic using standard ROS2 subscription
+- When a message arrives, it's wrapped and signed at the relay's own identity using `secure_publish`
+- Downstream secured subscribers see it as coming from `legacy_relay_in`, not the original untrusted source
+- This allows legacy nodes (third-party, binary-only, or unmigrated) to contribute to the secured graph
+
+**Outbound relay workflow** (secure → native):
+- Subscribes to a secured topic using `create_secure_subscription` with a `min_level`
+- The relay verifies signatures and decrypts before handling the message
+- The typed message (already verified) is re-published natively on an unsecured topic
+- Allows downstream legacy subscribers to consume trusted traffic without understanding envelopes
+
+### Debug Tool: Secure Echo
+
+For debugging and monitoring encrypted topics without building a full node:
+
+```python
+from ros2_security.secure_echo import SecureEchoNode
+from ros2_security.security_manager import SecurityLevel
+from sensor_msgs.msg import Image
+
+# Create a debug subscriber that loads all certificates and can verify/decrypt
+node = SecureEchoNode(
+    topic='/camera/frame',
+    msg_type=Image,
+    certs_dir='./certs',
+    node_name='secure_echo',
+    min_level=SecurityLevel.SIGN_ENCRYPT  # Only accept encrypted messages
+)
+
+# Usage from command line:
+# ros2 run ros2_security secure_echo \
+#     --topic /camera/frame \
+#     --type sensor_msgs/msg/Image \
+#     --min-level sign+encrypt \
+#     --certs-dir ./certs
+```
+
 ## Layout
 
 ```
@@ -121,3 +310,12 @@ pytest tests/test_policy_loader.py tests/test_security_manager.py tests/test_kil
 source /opt/ros/humble/setup.bash && source install/setup.bash
 pytest tests/ -v
 ```
+
+## Note on AES key derivation (spec reconciliation)
+
+Section 7 of the spec describes the *self* AES key as `SHA-256(own private key
+DER)` but the *decrypt* key as `SHA-256(sender public key DER)`. Those never
+match, so SIGN_ENCRYPT could not round-trip. Since the public certificate is the
+only key material both parties share, **both sides derive the symmetric key from
+the public key DER** (the sender from its own public key, the receiver from the
+sender's cert). See `security_manager._aes_key_from_public_key`.

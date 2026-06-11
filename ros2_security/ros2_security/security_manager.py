@@ -14,16 +14,10 @@ import time
 from enum import Enum
 
 from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography import x509
-
-# ``backend`` is a required positional on cryptography < 3.1 (e.g. the 2.8 that
-# ships with ROS2 Foxy / Ubuntu 20.04) and optional on >= 3.1 (ROS2 Humble).
-# Passing an explicit ``default_backend()`` works across both ranges.
-_CRYPTO_BACKEND = default_backend()
 
 # ---------------------------------------------------------------------------
 # Global kill switch -- evaluated ONCE at import time, never per-message.
@@ -116,8 +110,7 @@ class SecurityManager:
         # 1. Load own private key (PEM, no password).
         key_path = os.path.join(certs_dir, "{}.key".format(node_id))
         with open(key_path, "rb") as fh:
-            self._private_key = serialization.load_pem_private_key(
-                fh.read(), password=None, backend=_CRYPTO_BACKEND)
+            self._private_key = serialization.load_pem_private_key(fh.read(), password=None)
 
         # 2. Derive own symmetric AES key from own public key DER (see note above).
         self._aes_key = _aes_key_from_public_key(self._private_key.public_key())
@@ -125,7 +118,7 @@ class SecurityManager:
         # 3. Load the CA certificate.
         ca_path = os.path.join(certs_dir, "ca.crt")
         with open(ca_path, "rb") as fh:
-            ca_cert = x509.load_pem_x509_certificate(fh.read(), _CRYPTO_BACKEND)
+            ca_cert = x509.load_pem_x509_certificate(fh.read())
         ca_pub = ca_cert.public_key()
 
         # 4. Verify every node cert against the CA and trust the ones that pass.
@@ -134,7 +127,7 @@ class SecurityManager:
                 continue
             try:
                 with open(cert_path, "rb") as fh:
-                    cert = x509.load_pem_x509_certificate(fh.read(), _CRYPTO_BACKEND)
+                    cert = x509.load_pem_x509_certificate(fh.read())
                 ca_pub.verify(
                     cert.signature,
                     cert.tbs_certificate_bytes,
