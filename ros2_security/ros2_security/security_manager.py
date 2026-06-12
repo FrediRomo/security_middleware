@@ -14,6 +14,7 @@ import time
 from enum import Enum
 
 from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -110,7 +111,7 @@ class SecurityManager:
         # 1. Load own private key (PEM, no password).
         key_path = os.path.join(certs_dir, "{}.key".format(node_id))
         with open(key_path, "rb") as fh:
-            self._private_key = serialization.load_pem_private_key(fh.read(), password=None)
+            self._private_key = serialization.load_pem_private_key(fh.read(), password=None, backend=default_backend())
 
         # 2. Derive own symmetric AES key from own public key DER (see note above).
         self._aes_key = _aes_key_from_public_key(self._private_key.public_key())
@@ -118,7 +119,7 @@ class SecurityManager:
         # 3. Load the CA certificate.
         ca_path = os.path.join(certs_dir, "ca.crt")
         with open(ca_path, "rb") as fh:
-            ca_cert = x509.load_pem_x509_certificate(fh.read())
+            ca_cert = x509.load_pem_x509_certificate(fh.read(), default_backend())
         ca_pub = ca_cert.public_key()
 
         # 4. Verify every node cert against the CA and trust the ones that pass.
@@ -127,7 +128,7 @@ class SecurityManager:
                 continue
             try:
                 with open(cert_path, "rb") as fh:
-                    cert = x509.load_pem_x509_certificate(fh.read())
+                    cert = x509.load_pem_x509_certificate(fh.read(), default_backend())
                 ca_pub.verify(
                     cert.signature,
                     cert.tbs_certificate_bytes,
